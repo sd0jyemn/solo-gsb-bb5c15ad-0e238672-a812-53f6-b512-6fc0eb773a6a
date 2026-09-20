@@ -31,6 +31,16 @@
           <span>均衡分帖（在最少帖数间均匀分配张数，差 ≤ 1，空白页只留在末帖末尾）</span>
         </label>
       </div>
+      <div class="field checkbox-field">
+        <label for="chapterSplit">
+          <input id="chapterSplit" type="checkbox">
+          <span>章节优先分帖（按章节起始页规划，章节尽量不跨帖，章末允许帖内补白）</span>
+        </label>
+      </div>
+      <div class="field" id="chapterStartsField">
+        <label for="chapterStarts">章节起始页（递增，逗号分隔）</label>
+        <input id="chapterStarts" type="text" placeholder="如 1, 9, 13, 17" disabled>
+      </div>
       <div class="field">
         <label for="binding">装订方式</label>
         <select id="binding">
@@ -85,6 +95,9 @@
       固定分帖（默认）：每帖页数 = 每帖张数上限 × 4；总页数不足整帖时，自动在末尾补空白页。
       勾选「均衡分帖」后仍以每帖张数为上限，先取最少帖数，再把整本所需纸张在各帖间均匀分配（各帖实际张数差不超过 1），
       各帖按自身页数连续编号，空白页只出现在末帖末尾，爬移补偿也按各帖实际层数重算；响应中每帖返回 actualSheetCount，并汇总相对固定分帖节省的空白页数。
+      勾选「章节优先分帖」并填写递增的章节起始页后，系统在每帖不超过张数上限、每帖纸张数为整数的前提下规划连续页段，
+      按「章节被拆分次数最少 → 补白页总数最少 → 帖数最少 → 前帖优先装满」确定唯一方案；章节末尾允许插入帖内空白，
+      后续真实页码保持连续并正确进入下一帖，逐帖展示覆盖章节、真实页范围与补白位置（与均衡分帖互斥）。
       纸张厚度与最大补偿量任一为 0（或缺省）时不做爬移补偿；启用后第 i 张（由外向内 i 从 0 起）补偿量 = min(i × 纸张厚度 × 2, 最大补偿量) mm。
     </p>
     <p class="hint">

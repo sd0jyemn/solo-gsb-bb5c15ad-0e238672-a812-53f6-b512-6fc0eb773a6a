@@ -19,6 +19,35 @@ const exportBtn = document.getElementById('exportBtn');
 const canvas = document.getElementById('sheetCanvas');
 const tableBody = document.querySelector('#sheetTable tbody');
 const jsonPreview = document.getElementById('jsonPreview');
+const balancedSplitBox = document.getElementById('balancedSplit');
+const chapterSplitBox = document.getElementById('chapterSplit');
+const chapterStartsInput = document.getElementById('chapterStarts');
+
+/* 章节优先分帖与均衡分帖互斥；勾选章节模式时才允许填写章节起始页 */
+chapterSplitBox.addEventListener('change', () => {
+  chapterStartsInput.disabled = !chapterSplitBox.checked;
+  if (chapterSplitBox.checked) {
+    balancedSplitBox.checked = false;
+    chapterStartsInput.focus();
+  }
+});
+balancedSplitBox.addEventListener('change', () => {
+  if (balancedSplitBox.checked) {
+    chapterSplitBox.checked = false;
+    chapterStartsInput.disabled = true;
+  }
+});
+
+/** 解析章节起始页输入：支持逗号 / 顿号 / 分号 / 空白分隔；无法解析的 token 原样上送，由服务端给出明确错误。 */
+function parseChapterStarts(raw) {
+  return raw
+    .split(/[,，、;；\s]+/)
+    .filter(Boolean)
+    .map((token) => {
+      const n = Number(token);
+      return Number.isInteger(n) ? n : token;
+    });
+}
 
 const state = {
   result: null,
@@ -32,10 +61,13 @@ form.addEventListener('submit', async (event) => {
   event.preventDefault();
   errorBox.hidden = true;
 
+  const chapterSplit = chapterSplitBox.checked;
   const payload = {
     totalPages: Number(document.getElementById('totalPages').value),
     sheetsPerSignature: Number(document.getElementById('sheetsPerSignature').value),
-    balancedSplit: document.getElementById('balancedSplit').checked,
+    balancedSplit: balancedSplitBox.checked,
+    chapterSplit,
+    chapterStarts: chapterSplit ? parseChapterStarts(chapterStartsInput.value) : [],
     binding: document.getElementById('binding').value,
     flip: document.getElementById('flip').value,
     paperThickness: Number(document.getElementById('paperThickness').value),
@@ -116,21 +148,49 @@ function renderAll() {
   draw();
 }
 
+/** 本帖覆盖章节的可读文本，如「第 2 章」/「第 2–3 章」（非章节模式返回空串）。 */
+function sigChaptersText(sig) {
+  if (!sig.chapters || sig.chapters.length === 0) return '';
+  const first = sig.chapters[0].index;
+  const last = sig.chapters[sig.chapters.length - 1].index;
+  return first === last ? `第 ${first} 章` : `第 ${first}–${last} 章`;
+}
+
 function renderSummary() {
   const r = state.result;
   const balanced = r.balanced && r.balanced.enabled;
-  const modeText = balanced
-    ? `均衡分帖：上限 ${r.input.sheetsPerSignature} 张/帖`
-    : `固定分帖：每帖 ${r.input.sheetsPerSignature} 张（${r.pagesPerSignature} 页）`;
+  const chapterMode = r.chapters && r.chapters.enabled;
+  const modeText = chapterMode
+    ? `章节优先分帖：${r.chapters.count} 章 · 上限 ${r.input.sheetsPerSignature} 张/帖`
+    : balanced
+      ? `均衡分帖：上限 ${r.input.sheetsPerSignature} 张/帖`
+      : `固定分帖：每帖 ${r.input.sheetsPerSignature} 张（${r.pagesPerSignature} 页）`;
   const chips = [
     { text: `成品 ${r.input.totalPages} 页` },
-    { text: modeText, cls: balanced ? 'balanced' : '' },
+    { text: modeText, cls: balanced ? 'balanced' : chapterMode ? 'chapter' : '' },
     { text: `共 ${r.signatureCount} 帖` },
     { text: `补白后 ${r.paddedPages} 页` },
     { text: r.blankPages > 0 ? `自动补空白页 ${r.blankPages} 页` : '无需补白', cls: r.blankPages > 0 ? 'warn' : '' },
     { text: BINDING_TEXT[r.input.binding] },
     { text: FLIP_TEXT[r.input.flip] },
   ];
+  if (chapterMode) {
+    const counts = r.chapters.actualSheetCounts;
+    chips.push({
+      text: `章节起始页：[${r.chapters.starts.join(', ')}]`,
+      cls: 'chapter',
+    });
+    chips.push({
+      text: r.chapters.splitCount > 0
+        ? `章节被拆分 ${r.chapters.splitCount} 次（第 ${r.chapters.splitChapters.join('、')} 章）`
+        : '章节均未被拆分',
+      cls: r.chapters.splitCount > 0 ? 'warn' : 'chapter',
+    });
+    chips.push({
+      text: `各帖实际张数 [${counts.join(', ')}]`,
+      cls: 'chapter',
+    });
+  }
   if (balanced) {
     const counts = r.balanced.actualSheetCounts;
     const min = Math.min(...counts);
@@ -195,7 +255,8 @@ function renderSheetNav() {
     const sheet = sig.sheets[pos.shi];
     const opt = document.createElement('option');
     opt.value = String(i);
-    opt.textContent = `第 ${sig.index} 帖（${sig.actualSheetCount} 张） · 第 ${sheet.index} 张${fitOn && sheetHasFitFail(sheet) ? ' ⚠' : ''}`;
+    const chapterNote = sigChaptersText(sig) ? ` · ${sigChaptersText(sig)}` : '';
+    opt.textContent = `第 ${sig.index} 帖（${sig.actualSheetCount} 张${chapterNote}） · 第 ${sheet.index} 张${fitOn && sheetHasFitFail(sheet) ? ' ⚠' : ''}`;
     sheetSelect.appendChild(opt);
   });
   sheetSelect.value = String(state.idx);
@@ -225,11 +286,16 @@ function renderTable() {
         { name: '背面', side: sheet.back, note: flipNote },
       ].forEach(({ name, side, note }) => {
         const tr = document.createElement('tr');
-        // 帖号单元格：均衡分帖下追加本帖实际张数（仅在每帖首行重复标注）
+        // 帖号单元格：各帖实际张数不同于上限时追加标注；章节优先分帖下追加覆盖章节
         const tdSig = document.createElement('td');
-        tdSig.textContent = name === '正面'
-          ? `${sig.index}${sig.actualSheetCount !== r.input.sheetsPerSignature ? `（${sig.actualSheetCount} 张）` : ''}`
-          : '';
+        if (name === '正面') {
+          const parts = [];
+          if (sig.actualSheetCount !== r.input.sheetsPerSignature) parts.push(`${sig.actualSheetCount} 张`);
+          if (sigChaptersText(sig)) parts.push(sigChaptersText(sig));
+          tdSig.textContent = `${sig.index}${parts.length ? `（${parts.join(' · ')}）` : ''}`;
+        } else {
+          tdSig.textContent = '';
+        }
         tr.appendChild(tdSig);
         [String(sheet.index), name].forEach((t) => {
           const td = document.createElement('td');
@@ -332,8 +398,12 @@ function draw() {
   ctx.textBaseline = 'alphabetic';
   ctx.fillStyle = '#16233b';
   ctx.font = 'bold 22px system-ui, sans-serif';
+  const chapterMode = r.chapters && r.chapters.enabled;
+  const sigRangeText = chapterMode
+    ? `真实页码 ${sig.pageStart}–${sig.pageEnd} · ${sigChaptersText(sig)}${sig.blankPages > 0 ? ` · 本帖补白 ${sig.blankPages} 页` : ''}`
+    : `页码 ${sig.pageStart}–${sig.pageEnd}`;
   ctx.fillText(
-    `第 ${sig.index} / ${r.signatureCount} 帖 · 第 ${sheet.index} / ${sig.sheets.length} 张（本帖实际 ${sig.actualSheetCount} 张 · 页码 ${sig.pageStart}–${sig.pageEnd}）`,
+    `第 ${sig.index} / ${r.signatureCount} 帖 · 第 ${sheet.index} / ${sig.sheets.length} 张（本帖实际 ${sig.actualSheetCount} 张 · ${sigRangeText}）`,
     40, 44
   );
   ctx.font = '14px system-ui, sans-serif';
@@ -342,9 +412,11 @@ function draw() {
   const creepSubtitle = r.creep.enabled
     ? `　爬移补偿：纸厚 ${formatMm(r.input.paperThickness)} mm · 上限 ${formatMm(r.input.maxCompensation)} mm · 本张补偿 ${formatMm(sigCreepArr[sheet.index - 1])} mm`
     : '　爬移补偿未启用';
-  const modeSubtitle = r.balanced && r.balanced.enabled
-    ? `　均衡分帖（各帖实际张数差 ≤ 1）${r.balanced.savedBlankPages > 0 ? ` · 较固定分帖节省 ${r.balanced.savedBlankPages} 个空白页` : ''}`
-    : '　固定分帖';
+  const modeSubtitle = chapterMode
+    ? `　章节优先分帖（共 ${r.chapters.count} 章 · 拆分 ${r.chapters.splitCount} 次 · 起始页 [${r.chapters.starts.join(', ')}]）`
+    : r.balanced && r.balanced.enabled
+      ? `　均衡分帖（各帖实际张数差 ≤ 1）${r.balanced.savedBlankPages > 0 ? ` · 较固定分帖节省 ${r.balanced.savedBlankPages} 个空白页` : ''}`
+      : '　固定分帖';
   ctx.fillText(
     `装订：${BINDING_TEXT[binding]}　双面翻转：${FLIP_TEXT[flip]}　成品 ${r.input.totalPages} 页 · 补白 ${r.blankPages} 页 · 共 ${r.paddedPages} 页${creepSubtitle}${modeSubtitle}`,
     40, 70
@@ -749,6 +821,12 @@ function buildNotes(input, creep, fit, violations) {
     lines.push({
       text: '均衡分帖：以每帖张数为上限取最少帖数，整本所需纸张在各帖间均匀分配，各帖实际张数差不超过 1，各帖按自身页数连续编号，空白页只出现在末帖末尾；爬移补偿按各帖实际层数独立重算。',
       color: '#0b7285',
+    });
+  }
+  if (input.chapterSplit) {
+    lines.push({
+      text: '章节优先分帖：在每帖张数上限与整数张约束下，按「章节被拆分次数最少 → 补白页总数最少 → 帖数最少 → 前帖优先装满」确定唯一方案；章节末尾允许插入帖内空白（灰色斜纹），后续真实页码保持连续并正确进入下一帖。',
+      color: '#5f3dc4',
     });
   }
   if (creep && creep.enabled) {
