@@ -7,6 +7,7 @@
 - 成品页数不足整帖时，**自动在末尾补空白页**；
 - **固定分帖（默认）**：每帖固定张数（每帖页数 = 每帖张数 × 4），末帖不足整体补白；
 - **均衡分帖（可选）**：仍以每帖张数为上限，先取最少帖数，再把整本所需纸张在各帖间均匀分配，**各帖实际张数差不超过 1**，各帖按自身页数连续编号，**空白页只出现在末帖末尾**；每帖返回 `actualSheetCount`，并汇总相对固定分帖 `savedBlankPages` 节省的空白页数；
+- **章节优先分帖（可选，与均衡分帖互斥）**：输入递增的章节起始页，每章从新的帖开始、章与章不共用同一帖，按「**章节被拆分次数最少 → 补白页总数最少 → 帖数最少 → 前帖优先装满**」确定唯一方案；章节末尾允许插入帖内空白，后续章节真实页码保持连续、正确进入下一帖；逐帖展示覆盖章节、真实页范围与补白位置；
 - **按帖拆分页码**，生成每张纸正、反面的左右页位；
 - 背面依据 **长边 / 短边翻转** 执行坐标变换，保证裁切折叠后的阅读顺序；
 - 可选 **爬移补偿（creep compensation）**：按纸张厚度由外向内平移内层页位，画布叠加原始页位虚线框与补偿后实线框，每个页位（含空白页）输出 `offsetMm`；均衡分帖下按**各帖实际层数**独立重算；
@@ -57,6 +58,25 @@ npm test           # 运行拼版逻辑单元测试
 
 示例：17 页、每帖上限 2 张（8 页/帖）时，固定分帖为 `[8, 8, 8] = 24` 页、补 7 个空白页；均衡分帖为 `[2, 2, 1]` 张、`[8, 8, 4] = 20` 页，空白页仅 3 个且全部在末帖，`savedBlankPages = 4`。
 
+### 章节优先分帖（chapter-priority split）
+
+表单勾选「章节优先分帖」并填写章节起始页（API 传 `chapterSplit: true` + `chapterStarts: [1, 9, …]`）后启用；与均衡分帖**互斥**（同时启用返回 400）。不勾选 / 不传 / 传 `false` 时 `chapterStarts` 一律被忽略，固定 / 均衡分帖结果与旧版本完全一致。
+
+规则（`N` = 成品页数，`S` = 每帖张数上限）：
+
+- 章节起始页必须为 **1 ~ N 的整数、严格递增、不得重复**，至少 1 个；第一个起始页大于 1 时，前面的页面作为「前言」段一并参与规划；非法、重复或越界的起始页返回明确错误；
+- **每章从新的帖开始**，章与章不共用同一帖；每帖张数为整数且不超过 `S`；
+- 方案按以下优先级**唯一确定**：
+  1. **章节被拆分次数最少**：页数 `L` 的章取最少帖数 `k = ceil(L / 4S)`（拆分 `k − 1` 次）；
+  2. **补白页总数最少**：每章实际纸张取最少 `T = ceil(L / 4)` 张，章末补白 `4T − L` 页；
+  3. **帖数最少**：已由最少拆分保证（`k` 即该章最少帖数）；
+  4. **前帖优先装满**：`T` 张纸按 `[S, …, S, r]`（1 ≤ r ≤ S）从前向后分配；
+- 章节末尾的补白插在该章**末帖的高号页位**（帖内空白），下一章的真实页码保持连续、从下一帖第 1 个页位开始；
+- 每帖返回 `chapterIndex` / `chapterLabel` / `realPageStart` / `realPageEnd`（`pageEnd` 超出 `realPageEnd` 的部分即本帖补白位置）；顶层 `chapterSplit` 汇总 `chapterCount` / `totalSplits` / `totalSheets` 与各章的页码范围、帖数、拆分次数、补白页数及覆盖帖序号；
+- 爬移补偿仍按各帖实际层数独立重算；适配检查、画布逐张预览与导出 JSON 均按该方案生成。
+
+示例：20 页、每帖上限 2 张、章节起始页 `[1, 9]`：第 1 章 1–8 页 → 1 帖（2 张）；第 2 章 9–20 页 → 2 帖（`[2, 1]` 张，拆分 1 次）；共 3 帖、补白 0 页。若成品为 13 页，则第 2 章 9–13 页 → 1 帖（2 张），章末补白 3 页（页位 14–16），真实页 9–13 连续进入该帖。
+
 ### 爬移补偿（creep compensation）
 
 骑马钉装订时内层纸页在书背处被向外推出，折页裁切后内层页会比外层短，需要把内层页位向切口方向平移补偿。表单中的两个可选参数（均为 mm）：
@@ -98,6 +118,8 @@ npm test           # 运行拼版逻辑单元测试
   "totalPages": 16,
   "sheetsPerSignature": 2,
   "balancedSplit": false,
+  "chapterSplit": false,
+  "chapterStarts": [1, 9],
   "binding": "left",
   "flip": "short",
   "paperThickness": 0.1,
@@ -114,6 +136,8 @@ npm test           # 运行拼版逻辑单元测试
 - `totalPages`：成品页数，1 ~ 10000 的整数
 - `sheetsPerSignature`：每帖张数上限，1 ~ 100 的整数
 - `balancedSplit`：**可选**，`true` 启用均衡分帖（在最少帖数间均匀分配纸张，各帖实际张数差 ≤ 1，空白页只留在末帖末尾）；缺省 / `false` 为固定分帖（向后兼容）
+- `chapterSplit`：**可选**，`true` 启用章节优先分帖（与均衡分帖互斥）；缺省 / `false` 时 `chapterStarts` 被忽略，结果与旧版本一致
+- `chapterStarts`：启用章节优先分帖时**必填**，章节起始页数组（至少 1 个，每项为 1 ~ `totalPages` 的整数，严格递增且不重复）
 - `binding`：`left`（左装订）或 `right`（右装订）
 - `flip`：`long`（长边翻转）或 `short`（短边翻转）
 - `paperThickness`：**可选**，纸张厚度（mm，≥ 0，缺省为 0）
@@ -140,6 +164,45 @@ npm test           # 运行拼版逻辑单元测试
   "fixedBlankPages": 7,
   "savedBlankPages": 4,
   "actualSheetCounts": [2, 2, 1]
+}
+```
+
+顶层 `chapterSplit` 汇总章节优先分帖（未启用时为 `{ "enabled": false }`）；启用章节优先分帖时每个帖对象另带 `chapterIndex` / `chapterLabel` / `realPageStart` / `realPageEnd`：
+
+```json
+{
+  "enabled": true,
+  "maxSheetsPerSignature": 2,
+  "chapterStarts": [1, 9],
+  "chapterCount": 2,
+  "totalSplits": 1,
+  "totalSheets": 5,
+  "chapters": [
+    {
+      "index": 1,
+      "label": "第 1 章",
+      "pageStart": 1,
+      "pageEnd": 8,
+      "pageCount": 8,
+      "sheetCount": 2,
+      "signatureCount": 1,
+      "splits": 0,
+      "blankPages": 0,
+      "signatureIndices": [1]
+    },
+    {
+      "index": 2,
+      "label": "第 2 章",
+      "pageStart": 9,
+      "pageEnd": 20,
+      "pageCount": 12,
+      "sheetCount": 3,
+      "signatureCount": 2,
+      "splits": 1,
+      "blankPages": 0,
+      "signatureIndices": [2, 3]
+    }
+  ]
 }
 ```
 
@@ -222,19 +285,21 @@ npm test           # 运行拼版逻辑单元测试
 
 顶层 `fit` 汇总：`{ enabled, paperWidth, paperHeight, pageWidth, pageHeight, bleedMm, safetyMm, slotWidth, slotHeight, ok, totalSlots, failCount }`；未启用时仅为 `{ "enabled": false }`。
 
-参数非法时返回 `400` 与错误信息（含纸张厚度 / 最大补偿量为负，尺寸参数为负、非数字或只提供部分尺寸，`balancedSplit` 非布尔值等情况）。另提供 `GET /api/health` 健康检查。
+参数非法时返回 `400` 与错误信息（含纸张厚度 / 最大补偿量为负，尺寸参数为负、非数字或只提供部分尺寸，`balancedSplit` / `chapterSplit` 非布尔值，章节优先分帖与均衡分帖同时启用，章节起始页缺失、非整数、重复、非递增或越界等情况）。另提供 `GET /api/health` 健康检查。
 
 ## 目录结构
 
 ```
 ├── server.js            # Express 服务：静态页面 + /api/impose
-├── src/imposition.js    # 拼版计算核心（固定 / 均衡分帖、正反面页位、翻转坐标变换、爬移补偿 offsetMm）
+├── src/imposition.js    # 拼版计算核心（固定 / 均衡 / 章节优先分帖、正反面页位、翻转坐标变换、爬移补偿 offsetMm）
+├── src/chapterSplit.js  # 章节优先分帖规划器（起始页校验、按优先级确定唯一分帖方案）
 ├── src/fitCheck.js      # 纸张规格与出血 / 安全区适配检查（可用矩形、trim/bleed/safe、超限原因）
-├── public/              # 前端（原生 Canvas 逐张绘制、原始/补偿页位叠加、适配标记、JSON 导出）
+├── public/              # 前端（原生 Canvas 逐张绘制、原始/补偿页位叠加、适配标记、章节规划展示、JSON 导出）
 │   ├── index.html
 │   ├── app.js
 │   └── style.css
 ├── test/imposition.test.js
+├── test/chapterSplit.test.js
 ├── test/fitCheck.test.js
 ├── Dockerfile
 └── docker-compose.yml

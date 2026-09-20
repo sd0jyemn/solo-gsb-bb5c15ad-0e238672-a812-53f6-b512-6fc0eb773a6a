@@ -1,6 +1,7 @@
 'use strict';
 
 const { parseFitInput, attachFit } = require('./fitCheck');
+const { parseChapterStarts, planChapterSplit } = require('./chapterSplit');
 
 /**
  * 骑马钉（saddle-stitch）拼版计算核心。
@@ -27,6 +28,11 @@ const { parseFitInput, attachFit } = require('./fitCheck');
  *   各帖按自身页数连续编号，空白页只会出现在末帖末尾（页码最大的若干页位）。
  *   每帖返回 actualSheetCount；顶层 balanced.savedBlankPages 给出相对固定分帖
  *   少补的空白页数；爬移补偿按各帖实际层数（实际张数）独立重算。
+ * - 章节优先分帖（chapterSplit = true + chapterStarts，与均衡分帖互斥）：
+ *   每章从新的帖开始、章与章不共用同一帖，按「章节被拆分次数最少 → 补白页总数最少
+ *   → 帖数最少 → 前帖优先装满」确定唯一方案；章节末尾允许插入帖内空白，
+ *   后续章节的真实页码保持连续、正确进入下一帖。每帖返回 chapterIndex /
+ *   chapterLabel / realPageStart / realPageEnd，顶层 chapterSplit 汇总各章规划。
  *
  * 爬移补偿（creep compensation）：
  * - 内帖书背处向外隆起，内层纸页裁切后会比外层短，需要把内层页位向外侧平移补偿。
@@ -64,9 +70,9 @@ function round4(n) {
   return Object.is(r, -0) ? 0 : r;
 }
 
-/** 生成一个页位；超出成品页数的页位为空白页。 */
-function makeSlot(page, totalPages) {
-  if (page > totalPages) {
+/** 生成一个页位；超出本帖真实页范围（realEnd）的页位为帖内补白空白页。 */
+function makeSlot(page, realEnd) {
+  if (page > realEnd) {
     return { page: null, blank: true };
   }
   return { page, blank: false };
@@ -89,6 +95,9 @@ function makeSlot(page, totalPages) {
  * @param {number} [input.bleedMm]          出血（mm，≥0，缺省 0）
  * @param {number} [input.safetyMm]         安全边距（mm，≥0，缺省 0）
  * @param {boolean} [input.balancedSplit]   是否启用均衡分帖（缺省 false = 固定每帖张数）
+ * @param {boolean} [input.chapterSplit]    是否启用章节优先分帖（缺省 false；与均衡分帖互斥）
+ * @param {number[]} [input.chapterStarts]  章节起始页（启用章节优先分帖时必填：
+ *                                          严格递增、不重复、每项为 1 ~ 成品页数 的整数）
  * @returns {object} 拼版结果（按帖 -> 张 -> 正/背面 -> 左/右页位；启用适配检查时每个页位带 fit）
  */
 function computeImposition(input) {
@@ -99,6 +108,7 @@ function computeImposition(input) {
   const paperThickness = toNonNegativeMm(input && input.paperThickness);
   const maxCompensation = toNonNegativeMm(input && input.maxCompensation);
   const balancedSplit = input && input.balancedSplit === true;
+  const chapterSplitOn = input && input.chapterSplit === true;
   const fit = parseFitInput(input || {});
 
   if (!Number.isInteger(totalPages) || totalPages < 1 || totalPages > MAX_TOTAL_PAGES) {
@@ -122,26 +132,38 @@ function computeImposition(input) {
   if (input && input.balancedSplit !== undefined && typeof input.balancedSplit !== 'boolean') {
     throw new Error('均衡分帖开关必须为布尔值（true / false）');
   }
+  if (input && input.chapterSplit !== undefined && typeof input.chapterSplit !== 'boolean') {
+    throw new Error('章节优先分帖开关必须为布尔值（true / false）');
+  }
+  if (chapterSplitOn && balancedSplit) {
+    throw new Error('章节优先分帖与均衡分帖不能同时启用');
+  }
+  // 章节优先分帖：校验章节起始页并规划各章页段；未启用时 chapterStarts 一律忽略（向后兼容）。
+  const chapterStarts = chapterSplitOn ? parseChapterStarts(input.chapterStarts, totalPages) : null;
+  const chapterPlan = chapterSplitOn ? planChapterSplit(totalPages, sheetsPerSignature, chapterStarts) : null;
 
   const maxPagesPerSignature = sheetsPerSignature * 4;
 
   // 固定分帖：每帖固定 sheetsPerSignature 张，末帖整体补白。
   // 均衡分帖：以每帖张数为上限取最少帖数，整本所需纸张在各帖间均匀分配，
   // 各帖实际张数 = base 或 base + 1（多出的 remainder 帖依次靠前分配），差不超过 1。
+  // 章节优先分帖：按章节规划（见 src/chapterSplit.js），各章页段连续相接。
   const fixedSignatureCount = Math.ceil(totalPages / maxPagesPerSignature);
   const fixedPaddedPages = fixedSignatureCount * maxPagesPerSignature;
 
   // 均衡分帖下最少帖数与固定分帖相同（每帖容量仍为 maxPagesPerSignature）。
-  const signatureCount = fixedSignatureCount;
   let sheetCounts;
-  if (balancedSplit) {
+  if (chapterPlan) {
+    sheetCounts = chapterPlan.sheetCounts;
+  } else if (balancedSplit) {
     const totalSheetsNeeded = Math.ceil(totalPages / 4);
-    const base = Math.floor(totalSheetsNeeded / signatureCount);
-    const remainder = totalSheetsNeeded - base * signatureCount;
-    sheetCounts = Array.from({ length: signatureCount }, (_, s) => base + (s < remainder ? 1 : 0));
+    const base = Math.floor(totalSheetsNeeded / fixedSignatureCount);
+    const remainder = totalSheetsNeeded - base * fixedSignatureCount;
+    sheetCounts = Array.from({ length: fixedSignatureCount }, (_, s) => base + (s < remainder ? 1 : 0));
   } else {
-    sheetCounts = Array.from({ length: signatureCount }, () => sheetsPerSignature);
+    sheetCounts = Array.from({ length: fixedSignatureCount }, () => sheetsPerSignature);
   }
+  const signatureCount = sheetCounts.length;
 
   const paddedPages = sheetCounts.reduce((sum, n) => sum + n * 4, 0);
 
@@ -161,14 +183,28 @@ function computeImposition(input) {
   // 左装订：左页位为正、右页位为负；右装订：符号整体反转。
   const sideSign = binding === 'left' ? 1 : -1;
 
+  // 每帖页段规划：起始页位置、实际张数与最后一个真实页（超出即为帖内补白）。
+  // 固定 / 均衡分帖：页段连续相接，真实页到成品页数为止（补白只在末帖末尾）；
+  // 章节优先分帖：页段按章节规划，章末帖内补白，下一章真实页码连续进入下一帖。
+  const sigPlans = [];
+  if (chapterPlan) {
+    chapterPlan.signaturePlans.forEach((p) => sigPlans.push(p));
+  } else {
+    let cursor = 1;
+    sheetCounts.forEach((n) => {
+      sigPlans.push({ sheetCount: n, start: cursor, realEnd: totalPages, chapterIndex: null });
+      cursor += n * 4;
+    });
+  }
+
   const signatures = [];
-  let pageCursor = 1;
   for (let s = 0; s < signatureCount; s++) {
-    const actualSheetCount = sheetCounts[s];
+    const plan = sigPlans[s];
+    const actualSheetCount = plan.sheetCount;
     const pagesInSignature = actualSheetCount * 4;
-    const start = pageCursor;
+    const start = plan.start;
     const end = start + pagesInSignature - 1;
-    pageCursor += pagesInSignature;
+    const realEnd = plan.realEnd;
     const sigCompensationMm = compensationFor(actualSheetCount);
     let sigBlankPages = 0;
     const sheets = [];
@@ -194,12 +230,12 @@ function computeImposition(input) {
       const backRight = flip === 'long' ? behindRight : behindLeft;
 
       const front = {
-        left: makeSlot(frontLeft, totalPages),
-        right: makeSlot(frontRight, totalPages),
+        left: makeSlot(frontLeft, realEnd),
+        right: makeSlot(frontRight, realEnd),
       };
       const back = {
-        left: makeSlot(backLeft, totalPages),
-        right: makeSlot(backRight, totalPages),
+        left: makeSlot(backLeft, realEnd),
+        right: makeSlot(backRight, realEnd),
       };
       [front.left, front.right, back.left, back.right].forEach((slot) => {
         if (slot.blank) sigBlankPages += 1;
@@ -223,6 +259,15 @@ function computeImposition(input) {
       index: s + 1,
       pageStart: start,
       pageEnd: end,
+      // 章节优先分帖：本帖所属章节与真实页范围（pageEnd 超出 realPageEnd 的部分为帖内补白）
+      ...(chapterPlan
+        ? {
+            chapterIndex: plan.chapterIndex,
+            chapterLabel: chapterPlan.chapters[plan.chapterIndex - 1].label,
+            realPageStart: start,
+            realPageEnd: realEnd,
+          }
+        : {}),
       actualSheetCount,
       actualPageCount: pagesInSignature,
       blankPages: sigBlankPages,
@@ -234,13 +279,15 @@ function computeImposition(input) {
   const result = {
     meta: {
       app: 'saddle-stitch-imposition',
-      version: '1.3.0',
+      version: '1.4.0',
       generatedAt: new Date().toISOString(),
     },
     input: {
       totalPages,
       sheetsPerSignature,
       balancedSplit,
+      chapterSplit: chapterSplitOn,
+      chapterStarts,
       binding,
       flip,
       paperThickness,
@@ -274,6 +321,18 @@ function computeImposition(input) {
           fixedBlankPages: fixedPaddedPages - totalPages,
           savedBlankPages: fixedPaddedPages - paddedPages,
           actualSheetCounts: sheetCounts.slice(),
+        }
+      : { enabled: false },
+    // 章节优先分帖汇总：各章页码范围、帖数、拆分次数、补白页数与逐帖页段规划
+    chapterSplit: chapterPlan
+      ? {
+          enabled: true,
+          maxSheetsPerSignature: sheetsPerSignature,
+          chapterStarts,
+          chapterCount: chapterPlan.chapters.length,
+          totalSplits: chapterPlan.totalSplits,
+          totalSheets: chapterPlan.totalSheets,
+          chapters: chapterPlan.chapters,
         }
       : { enabled: false },
     signatures,

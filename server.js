@@ -18,7 +18,9 @@ app.get('/api/health', (req, res) => {
  * 请求体：{
  *   totalPages, sheetsPerSignature, binding: 'left'|'right', flip: 'long'|'short',
  *   paperThickness?, maxCompensation?,                       // 可选，纸张厚度与爬移最大补偿量（mm，缺省/为 0 不补偿）
- *   balancedSplit?                                           // 可选，true = 均衡分帖（缺省 false = 固定分帖）
+ *   balancedSplit?,                                          // 可选，true = 均衡分帖（缺省 false = 固定分帖）
+ *   chapterSplit?, chapterStarts?                            // 可选，章节优先分帖（与均衡分帖互斥）：
+ *                                                            //   chapterSplit = true 时 chapterStarts 为严格递增的章节起始页数组
  * }
  * 响应：拼版清单 JSON（与前端「导出拼版清单 JSON」内容一致）
  */

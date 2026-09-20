@@ -31,6 +31,16 @@
           <span>均衡分帖（在最少帖数间均匀分配张数，差 ≤ 1，空白页只留在末帖末尾）</span>
         </label>
       </div>
+      <div class="field checkbox-field">
+        <label for="chapterSplit">
+          <input id="chapterSplit" type="checkbox">
+          <span>章节优先分帖（每章从新的帖开始，章末帖内补白，按「拆分最少 → 补白最少 → 帖数最少 → 前帖装满」规划）</span>
+        </label>
+      </div>
+      <div class="field" id="chapterStartsField">
+        <label for="chapterStarts">章节起始页（递增，逗号 / 空格分隔）</label>
+        <input id="chapterStarts" type="text" placeholder="如 1, 9, 25" disabled>
+      </div>
       <div class="field">
         <label for="binding">装订方式</label>
         <select id="binding">
@@ -88,6 +98,12 @@
       纸张厚度与最大补偿量任一为 0（或缺省）时不做爬移补偿；启用后第 i 张（由外向内 i 从 0 起）补偿量 = min(i × 纸张厚度 × 2, 最大补偿量) mm。
     </p>
     <p class="hint">
+      章节优先分帖（可选，与均衡分帖互斥）：填写严格递增的章节起始页后，每章从新的帖开始、章与章不共用同一帖；
+      按「章节被拆分次数最少 → 补白页总数最少 → 帖数最少 → 前帖优先装满」确定唯一方案，
+      章节末尾允许插入帖内空白，后续章节的真实页码保持连续、正确进入下一帖；
+      逐帖展示覆盖章节、真实页范围与补白位置。第一个起始页大于 1 时，前面的页面作为「前言」段参与规划。
+    </p>
+    <p class="hint">
       适配检查（可选）：同时填写纸张宽高与成品页宽高后，系统按每个正反页位的实际方向计算可用矩形，
       检查成品页是否放得下、出血是否落在纸张内、安全边距是否过大，并在逐张预览与清单中标出不合格页位；
       四项尺寸全部留空（或为 0）则不检查。出血 / 安全边距缺省为 0。
@@ -97,6 +113,7 @@
 
   <section class="card" id="resultCard" hidden>
     <div class="summary" id="summary"></div>
+    <div class="chapter-plan" id="chapterPlan" hidden></div>
     <div class="toolbar">
       <button id="prevBtn" type="button" class="ghost">← 上一张</button>
       <select id="sheetSelect" aria-label="选择纸张"></select>

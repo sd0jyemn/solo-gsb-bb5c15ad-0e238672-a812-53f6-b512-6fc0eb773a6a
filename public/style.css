@@ -184,6 +184,41 @@ button.ghost:disabled {
   font-weight: 600;
 }
 
+.summary .chip.chapters {
+  background: #f3ecff;
+  color: #5f3dc4;
+}
+
+.chapter-plan {
+  border: 1px solid #e3e8f0;
+  border-radius: 8px;
+  padding: 8px 14px;
+  margin-bottom: 14px;
+  font-size: 13px;
+  color: #16233b;
+  background: #f8fafc;
+}
+
+.chapter-plan .chapter-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  padding: 6px 0;
+}
+
+.chapter-plan .chapter-row + .chapter-row {
+  border-top: 1px dashed #e3e8f0;
+}
+
+.chapter-plan .chapter-label {
+  font-weight: 600;
+  color: #5f3dc4;
+}
+
+.chapter-plan .chapter-blank {
+  color: #b35900;
+}
+
 .slot-fit {
   margin-top: 2px;
   font-size: 12px;
